@@ -1,19 +1,21 @@
 use std::{io::Read, io::Write};
 
 use byteorder::{LE, ReadBytesExt, WriteBytesExt};
-use std::io::Result;
 
-pub trait Readable {
-    fn de<S: Read>(stream: &mut S) -> Result<Self>
+pub trait Readable<E = std::io::Error>
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E>
     where
         Self: Sized;
-    fn de_vec<S: Read>(len: usize, stream: &mut S) -> Result<Vec<Self>>
+    fn de_vec<S: Read>(len: usize, stream: &mut S) -> Result<Vec<Self>, E>
     where
         Self: Sized,
     {
         read_array(len, stream, Self::de)
     }
-    fn de_array<S: Read, const N: usize>(stream: &mut S) -> Result<[Self; N]>
+    fn de_array<S: Read, const N: usize>(stream: &mut S) -> Result<[Self; N], E>
     where
         Self: Sized + Copy + Default,
     {
@@ -24,9 +26,12 @@ pub trait Readable {
         Ok(buf)
     }
 }
-pub trait Writeable {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()>;
-    fn ser_array<S: Write, T: AsRef<[Self]>>(this: T, stream: &mut S) -> Result<()>
+pub trait Writeable<E = std::io::Error>
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E>;
+    fn ser_array<S: Write, T: AsRef<[Self]>>(this: T, stream: &mut S) -> Result<(), E>
     where
         Self: Sized,
     {
@@ -36,103 +41,145 @@ pub trait Writeable {
         Ok(())
     }
 }
-pub trait ReadableCtx<C> {
-    fn de<S: Read>(stream: &mut S, ctx: C) -> Result<Self>
+pub trait ReadableCtx<C, E = std::io::Error>
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S, ctx: C) -> Result<Self, E>
     where
         Self: Sized;
 }
 
 impl<T> ReadExt for T where T: Read {}
 pub trait ReadExt: Read {
-    fn de<T: Readable>(&mut self) -> Result<T>
+    fn de<T: Readable<E>, E>(&mut self) -> Result<T, E>
     where
         Self: Sized,
+        E: From<std::io::Error>,
     {
         T::de(self)
     }
-    fn de_ctx<T: ReadableCtx<C>, C>(&mut self, ctx: C) -> Result<T>
+    fn de_ctx<T: ReadableCtx<C, E>, C, E>(&mut self, ctx: C) -> Result<T, E>
     where
         Self: Sized,
+        E: From<std::io::Error>,
     {
         T::de(self, ctx)
     }
 }
 impl<T> WriteExt for T where T: Write {}
 pub trait WriteExt: Write {
-    fn ser<T: Writeable>(&mut self, value: &T) -> Result<()>
+    fn ser<T: Writeable<E>, E>(&mut self, value: &T) -> Result<(), E>
     where
         Self: Sized,
+        E: From<std::io::Error>,
     {
         value.ser(self)
     }
     /// Serialize &[T] without length prefix
-    fn ser_no_length<T: Writeable, S: AsRef<[T]>>(&mut self, value: &S) -> Result<()>
+    fn ser_no_length<T: Writeable<E>, S: AsRef<[T]>, E>(&mut self, value: &S) -> Result<(), E>
     where
         Self: Sized,
+        E: From<std::io::Error>,
     {
         T::ser_array(value.as_ref(), self)
     }
 }
 
-impl<const N: usize, T: Readable + Default + Copy> Readable for [T; N] {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
+impl<const N: usize, T: Readable<E> + Default + Copy, E> Readable<E> for [T; N]
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
         T::de_array(stream)
     }
 }
-impl<const N: usize, T: Writeable> Writeable for [T; N] {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
+impl<const N: usize, T: Writeable<E>, E> Writeable<E> for [T; N]
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
         T::ser_array(self, stream)
     }
 }
 
-impl Readable for String {
-    fn de<S: Read>(s: &mut S) -> Result<Self> {
-        read_string(s.de()?, s)
+impl<E> Readable<E> for String
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(s: &mut S) -> Result<Self, E> {
+        let len: i32 = s.read_i32::<LE>()?;
+        read_string(len, s)
     }
 }
-impl Writeable for String {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
+impl<E> Writeable<E> for String
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
         write_string(stream, self)
     }
 }
-impl Writeable for &str {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
+impl<E> Writeable<E> for &str
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
         write_string(stream, self)
     }
 }
 
-impl<T: Readable> Readable for Vec<T> {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        T::de_vec(stream.read_u32::<LE>()? as usize, stream)
+impl<T: Readable<E>, E> Readable<E> for Vec<T>
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        let len = stream.read_u32::<LE>()? as usize;
+        T::de_vec(len, stream)
     }
 }
-impl<T: Readable> ReadableCtx<usize> for Vec<T> {
-    fn de<S: Read>(stream: &mut S, ctx: usize) -> Result<Self> {
+impl<T: Readable<E>, E> ReadableCtx<usize, E> for Vec<T>
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S, ctx: usize) -> Result<Self, E> {
         T::de_vec(ctx, stream)
     }
 }
-impl<T: Writeable> Writeable for Vec<T> {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
+impl<T: Writeable<E>, E> Writeable<E> for Vec<T>
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
         stream.write_u32::<LE>(self.len() as u32)?;
         T::ser_array(self, stream)
     }
 }
 
-impl Readable for bool {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
+impl<E> Readable<E> for bool
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
         Ok(stream.read_u32::<LE>()? != 0)
     }
 }
-impl Writeable for bool {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u32::<LE>(if *self { 1 } else { 0 })
+impl<E> Writeable<E> for bool
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_u32::<LE>(if *self { 1 } else { 0 })?)
     }
 }
-impl Readable for u8 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_u8()
+impl<E> Readable<E> for u8
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_u8()?)
     }
-    fn de_vec<S: Read>(len: usize, stream: &mut S) -> Result<Vec<Self>>
+    fn de_vec<S: Read>(len: usize, stream: &mut S) -> Result<Vec<Self>, E>
     where
         Self: Sized,
     {
@@ -140,7 +187,7 @@ impl Readable for u8 {
         stream.read_exact(&mut buf)?;
         Ok(buf)
     }
-    fn de_array<S: Read, const N: usize>(stream: &mut S) -> Result<[Self; N]>
+    fn de_array<S: Read, const N: usize>(stream: &mut S) -> Result<[Self; N], E>
     where
         Self: Sized + Copy + Default,
     {
@@ -149,91 +196,137 @@ impl Readable for u8 {
         Ok(buf)
     }
 }
-impl Writeable for u8 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u8(*self)
+impl<E> Writeable<E> for u8
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_u8(*self)?)
     }
-    fn ser_array<S: Write, T: AsRef<[Self]>>(this: T, stream: &mut S) -> Result<()>
+    fn ser_array<S: Write, T: AsRef<[Self]>>(this: T, stream: &mut S) -> Result<(), E>
     where
         Self: Sized,
     {
-        stream.write_all(this.as_ref())
+        Ok(stream.write_all(this.as_ref())?)
     }
 }
-impl Readable for i8 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_i8()
+impl<E> Readable<E> for i8
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_i8()?)
     }
 }
-impl Writeable for i8 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_i8(*self)
+impl<E> Writeable<E> for i8
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_i8(*self)?)
     }
 }
-impl Readable for u16 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_u16::<LE>()
+impl<E> Readable<E> for u16
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_u16::<LE>()?)
     }
 }
-impl Writeable for u16 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u16::<LE>(*self)
+impl<E> Writeable<E> for u16
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_u16::<LE>(*self)?)
     }
 }
-impl Readable for i16 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_i16::<LE>()
+impl<E> Readable<E> for i16
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_i16::<LE>()?)
     }
 }
-impl Writeable for i16 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_i16::<LE>(*self)
+impl<E> Writeable<E> for i16
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_i16::<LE>(*self)?)
     }
 }
-impl Readable for u32 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_u32::<LE>()
+impl<E> Readable<E> for u32
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_u32::<LE>()?)
     }
 }
-impl Writeable for u32 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u32::<LE>(*self)
+impl<E> Writeable<E> for u32
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_u32::<LE>(*self)?)
     }
 }
-impl Readable for i32 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_i32::<LE>()
+impl<E> Readable<E> for i32
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_i32::<LE>()?)
     }
 }
-impl Writeable for i32 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_i32::<LE>(*self)
+impl<E> Writeable<E> for i32
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_i32::<LE>(*self)?)
     }
 }
-impl Readable for u64 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_u64::<LE>()
+impl<E> Readable<E> for u64
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_u64::<LE>()?)
     }
 }
-impl Writeable for u64 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_u64::<LE>(*self)
+impl<E> Writeable<E> for u64
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_u64::<LE>(*self)?)
     }
 }
-impl Readable for i64 {
-    fn de<S: Read>(stream: &mut S) -> Result<Self> {
-        stream.read_i64::<LE>()
+impl<E> Readable<E> for i64
+where
+    E: From<std::io::Error>,
+{
+    fn de<S: Read>(stream: &mut S) -> Result<Self, E> {
+        Ok(stream.read_i64::<LE>()?)
     }
 }
-impl Writeable for i64 {
-    fn ser<S: Write>(&self, stream: &mut S) -> Result<()> {
-        stream.write_i64::<LE>(*self)
+impl<E> Writeable<E> for i64
+where
+    E: From<std::io::Error>,
+{
+    fn ser<S: Write>(&self, stream: &mut S) -> Result<(), E> {
+        Ok(stream.write_i64::<LE>(*self)?)
     }
 }
 
-pub fn read_array<S: Read, T, F>(len: usize, stream: &mut S, mut f: F) -> Result<Vec<T>>
+pub fn read_array<S: Read, T, F, E>(len: usize, stream: &mut S, mut f: F) -> Result<Vec<T>, E>
 where
-    F: FnMut(&mut S) -> Result<T>,
+    F: FnMut(&mut S) -> Result<T, E>,
+    E: From<std::io::Error>,
 {
     let mut array = Vec::with_capacity(len);
     for _ in 0..len {
@@ -242,7 +335,10 @@ where
     Ok(array)
 }
 
-pub fn read_string<S: Read>(len: i32, stream: &mut S) -> Result<String> {
+pub fn read_string<S: Read, E>(len: i32, stream: &mut S) -> Result<String, E>
+where
+    E: From<std::io::Error>,
+{
     if len < 0 {
         let chars = read_array((-len) as usize, stream, |r| r.read_u16::<LE>())?;
         let length = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
@@ -255,7 +351,10 @@ pub fn read_string<S: Read>(len: i32, stream: &mut S) -> Result<String> {
     }
 }
 
-pub fn write_string<S: Write>(stream: &mut S, value: &str) -> Result<()> {
+pub fn write_string<S: Write, E>(stream: &mut S, value: &str) -> Result<(), E>
+where
+    E: From<std::io::Error>,
+{
     if value.is_empty() {
         stream.write_u32::<LE>(0)?;
     } else if value.is_ascii() {
